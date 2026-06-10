@@ -1,4 +1,7 @@
 mod cli;
+mod list;
+#[allow(dead_code)]
+mod serial;
 
 use clap::Parser;
 use cli::Cli;
@@ -29,9 +32,13 @@ fn main() {
     cmd_interactive(&args);
 }
 
-fn cmd_list(_args: &Cli) {
-    eprintln!("not implemented");
-    std::process::exit(1);
+fn cmd_list(args: &Cli) {
+    let devices = list::enumerate_devices();
+    if args.json {
+        print!("{}", list::render_json(&devices));
+    } else {
+        print!("{}", list::render_table(&devices));
+    }
 }
 
 fn cmd_json(_args: &Cli) {
