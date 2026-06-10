@@ -4,5 +4,6 @@ pub mod format;
 pub mod keys;
 pub mod list;
 pub mod log;
+pub mod oneshot;
 pub mod serial;
 pub mod terminal;

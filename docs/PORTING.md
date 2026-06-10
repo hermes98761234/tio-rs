@@ -200,3 +200,62 @@ All strategies auto-reconnect on disconnect (unless `--no-reconnect`).
 7. **New AI features**: `--json`, `--send`, `--expect`, `--timeout`, `mcp` subcommand.
 8. **No `--complete-profiles`** — upstream uses this for bash completion; clap handles completion natively in Rust.
 9. **MIT license** — clean-room rewrite, no GPL code.
+
+## AI / Scripting Usage
+
+tio-rs supports non-interactive one-shot mode for AI agents and shell scripts.
+Use `--send` to transmit a string, `--expect` to wait for a regex match, and
+`--json` to get machine-readable output.
+
+### Shell examples
+
+```bash
+# Simple AT command with JSON result
+tio /dev/ttyUSB0 --send 'AT\r' --expect 'OK|ERROR' --timeout 5 --json
+
+# Send hex bytes, expect response
+tio /dev/ttyUSB0 --send '\x1b\x5b\x32\x4a' --expect '.*' --timeout 3 --json
+
+# Pipe mode (stdin is not a TTY): send piped data, expect response
+echo "AT" | tio /dev/ttyUSB0 --expect 'OK' --timeout 5 --json
+
+# Just send without expecting (fire-and-forget)
+tio /dev/ttyUSB0 --send 'ATZ\r' --timeout 2
+```
+
+### JSON output shape
+
+```json
+{
+  "sent": "AT\\r",
+  "received": "AT\\r\\r\\nOK\\r\\n",
+  "matched": "AT\\r\\r\\nOK\\r\\n",
+  "elapsed_ms": 42,
+  "timeout": false
+}
+```
+
+Fields:
+- `sent` — the original send string (with escapes preserved)
+- `received` — all bytes received before match or timeout (lossy UTF-8)
+- `matched` — the text that matched the regex, or `null` on timeout
+- `elapsed_ms` — milliseconds elapsed since opening the port
+- `timeout` — `true` if the expect pattern was not found in time
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0    | Success — regex matched (or no `--expect` and write succeeded) |
+| 1    | Timeout — `--expect` pattern not found within `--timeout` seconds |
+| 2    | Error — could not open device, invalid regex, or I/O error |
+
+### Escape sequences in `--send`
+
+| Sequence | Byte |
+|----------|------|
+| `\r`     | CR (0x0d) |
+| `\n`     | LF (0x0a) |
+| `\t`     | TAB (0x09) |
+| `\\`     | Backslash |
+| `\xNN`   | Hex byte (e.g. `\x41` = 'A') |

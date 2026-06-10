@@ -2,6 +2,7 @@ use clap::Parser;
 use tio_rs::cli::Cli;
 use tio_rs::format::{self, OutputFormatter, OutputMode};
 use tio_rs::log::SessionLogger;
+use tio_rs::oneshot;
 use tio_rs::serial;
 use tio_rs::terminal;
 
@@ -13,12 +14,12 @@ fn main() {
         return;
     }
 
-    if args.json {
+    if args.json && args.send.is_none() {
         cmd_json(&args);
         return;
     }
 
-    if args.send.is_some() {
+    if args.send.is_some() || args.expect.is_some() {
         cmd_send_expect(&args);
         return;
     }
@@ -48,9 +49,39 @@ fn cmd_json(_args: &Cli) {
     std::process::exit(1);
 }
 
-fn cmd_send_expect(_args: &Cli) {
-    eprintln!("not implemented");
-    std::process::exit(1);
+fn cmd_send_expect(args: &Cli) {
+    use tio_rs::cli::{FlowControl, Parity};
+
+    let serial_cfg = serial::SerialConfig {
+        device: args.device.clone().unwrap_or_default(),
+        baudrate: args.baudrate,
+        databits: args.databits,
+        stopbits: args.stopbits,
+        parity: match args.parity {
+            Parity::None => serialport::Parity::None,
+            Parity::Odd => serialport::Parity::Odd,
+            Parity::Even => serialport::Parity::Even,
+        },
+        flow: match args.flow {
+            FlowControl::None => serialport::FlowControl::None,
+            FlowControl::Hard => serialport::FlowControl::Hardware,
+            FlowControl::Soft => serialport::FlowControl::Software,
+        },
+        reconnect: false,
+    };
+
+    // Parse the send string (or use empty if only --expect was given)
+    let send_str = args.send.as_deref().unwrap_or("");
+    let send_bytes = oneshot::parse_escapes(send_str);
+
+    let expect = args.expect.as_deref();
+    let timeout = args.timeout;
+    let json = args.json;
+
+    match oneshot::run(&serial_cfg, &send_bytes, send_str, expect, timeout, json) {
+        Ok(_) => std::process::exit(0),
+        Err(code) => std::process::exit(code),
+    }
 }
 
 fn cmd_mcp(_args: &Cli) {
