@@ -5,6 +5,15 @@ use std::time::Duration;
 
 use serialport::{DataBits, FlowControl, Parity, StopBits};
 
+use std::os::fd::AsFd;
+
+use nix::sys::termios::tcgetattr;
+
+/// Get the current termios for a file descriptor.
+pub fn get_termios(fd: &dyn AsFd) -> nix::Result<nix::sys::termios::Termios> {
+    tcgetattr(fd)
+}
+
 /// Configuration for opening a serial port.
 #[derive(Debug, Clone)]
 pub struct SerialConfig {
@@ -48,7 +57,7 @@ fn stopbits(s: u8) -> StopBits {
 }
 
 /// Timestamped status line like `[tio HH:MM:SS] Connected`.
-fn status_line(msg: &str) {
+pub fn status_line(msg: &str) {
     let now = std::time::SystemTime::now();
     let dur = now
         .duration_since(std::time::UNIX_EPOCH)
