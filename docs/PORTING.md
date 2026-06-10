@@ -37,7 +37,7 @@
 | `--output-delay <ms>`          | `-o`  | **port**       | Character delay on output                      |
 | `--output-line-delay <ms>`     | `-O`  | **port**       | Line delay on output                           |
 | `--line-pulse-duration <dur>`  |       | **port**       | Key=value pairs: DTR=200,RTS=150 etc.         |
-| `--auto-connect new|latest|direct` | `-a` | **port**       | Default direct                                |
+| `--auto-connect new|latest|direct` | `-a` | **done**       | Default direct                                |
 | `--exclude-devices <pattern>`  |       | **port**       | Glob `*` and `?`                               |
 | `--exclude-drivers <pattern>`  |       | **port**       | Glob `*` and `?`                               |
 | `--exclude-tids <pattern>`     |       | **port**       | Glob `*` and `?`                               |

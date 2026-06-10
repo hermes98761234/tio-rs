@@ -12,6 +12,7 @@ use std::thread;
 
 use nix::sys::termios::{tcsetattr, SetArg, SpecialCharacterIndices, Termios};
 
+use crate::cli::AutoConnect;
 use crate::format::OutputFormatter;
 use crate::keys::{CtrlTStateMachine, TtyAction};
 use crate::log::SessionLogger;
@@ -115,6 +116,7 @@ pub fn run_interactive(
     logger: SessionLogger,
     _timestamps: bool,
     _timestamp_format: Option<String>,
+    auto_connect: &AutoConnect,
 ) -> std::io::Result<()> {
     let running = Arc::new(AtomicBool::new(true));
     let stats = Arc::new(SessionStats::new());
@@ -122,7 +124,7 @@ pub fn run_interactive(
     // Open the serial port
     serial::status_line("Connected");
 
-    let mut port = match serial::open_with_reconnect(cfg) {
+    let mut port = match serial::open_with_reconnect(cfg, auto_connect) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Failed to open {}: {}", cfg.device, e);
@@ -131,13 +133,12 @@ pub fn run_interactive(
     };
 
     // Enter raw mode
-    let _guard = enter_raw_mode()
-        .map_err(|e| std::io::Error::other(format!("raw mode: {}", e)))?;
+    let _guard = enter_raw_mode().map_err(|e| std::io::Error::other(format!("raw mode: {}", e)))?;
 
     // Clone port for the read thread
-    let mut read_port = port.try_clone().map_err(|e| {
-        std::io::Error::other(format!("port clone: {}", e))
-    })?;
+    let mut read_port = port
+        .try_clone()
+        .map_err(|e| std::io::Error::other(format!("port clone: {}", e)))?;
 
     let cfg_clone = cfg.clone();
     let running_clone = Arc::clone(&running);

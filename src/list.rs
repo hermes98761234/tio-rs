@@ -7,6 +7,8 @@ use std::time::SystemTime;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use crate::config::Profile;
+
 /// Information about a single serial device.
 #[derive(Debug, Serialize)]
 pub struct DeviceInfo {
@@ -257,6 +259,60 @@ pub fn render_json(devices: &[DeviceInfo]) -> String {
     serde_json::to_string_pretty(devices).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// Render configured profiles section for --list output.
+pub fn render_profiles(profiles: &HashMap<String, Profile>) -> String {
+    if profiles.is_empty() {
+        return String::new();
+    }
+    let mut output = String::new();
+    output.push_str("\nConfigured profiles:\n");
+    output.push_str(&"-".repeat(80));
+    output.push('\n');
+
+    // Sort profiles by name for deterministic output
+    let mut names: Vec<&String> = profiles.keys().collect();
+    names.sort();
+
+    for name in names {
+        let p = &profiles[name];
+        output.push_str(&format!("  [profile.{}]\n", name));
+        if let Some(ref v) = p.device {
+            output.push_str(&format!("    device = {}\n", v));
+        }
+        if let Some(v) = p.baudrate {
+            output.push_str(&format!("    baudrate = {}\n", v));
+        }
+        if let Some(v) = p.databits {
+            output.push_str(&format!("    databits = {}\n", v));
+        }
+        if let Some(v) = p.stopbits {
+            output.push_str(&format!("    stopbits = {}\n", v));
+        }
+        if let Some(ref v) = p.parity {
+            output.push_str(&format!("    parity = {}\n", v));
+        }
+        if let Some(ref v) = p.flow {
+            output.push_str(&format!("    flow = {}\n", v));
+        }
+        if let Some(v) = p.local_echo {
+            output.push_str(&format!("    local-echo = {}\n", v));
+        }
+        if let Some(v) = p.timestamp {
+            output.push_str(&format!("    timestamp = {}\n", v));
+        }
+        if let Some(v) = p.log {
+            output.push_str(&format!("    log = {}\n", v));
+        }
+        if let Some(ref v) = p.log_file {
+            output.push_str(&format!("    log-file = {}\n", v));
+        }
+        if let Some(ref v) = p.pattern {
+            output.push_str(&format!("    pattern = {}\n", v));
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +378,35 @@ mod tests {
         let devices: Vec<DeviceInfo> = vec![];
         let json = render_json(&devices);
         assert_eq!(json, "[]");
+    }
+
+    #[test]
+    fn test_render_profiles_empty() {
+        let profiles: HashMap<String, crate::config::Profile> = HashMap::new();
+        let output = render_profiles(&profiles);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_render_profiles_with_data() {
+        use crate::config::Profile;
+        let mut profiles: HashMap<String, Profile> = HashMap::new();
+        profiles.insert(
+            "myusb".to_string(),
+            Profile {
+                device: Some("/dev/ttyUSB0".to_string()),
+                baudrate: Some(57600),
+                local_echo: Some(true),
+                pattern: Some("/dev/ttyUSB.*".to_string()),
+                ..Default::default()
+            },
+        );
+        let output = render_profiles(&profiles);
+        assert!(output.contains("Configured profiles"));
+        assert!(output.contains("[profile.myusb]"));
+        assert!(output.contains("device = /dev/ttyUSB0"));
+        assert!(output.contains("baudrate = 57600"));
+        assert!(output.contains("local-echo = true"));
+        assert!(output.contains("pattern = /dev/ttyUSB.*"));
     }
 }

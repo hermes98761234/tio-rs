@@ -37,6 +37,9 @@ fn cmd_list(args: &Cli) {
         print!("{}", tio_rs::list::render_json(&devices));
     } else {
         print!("{}", tio_rs::list::render_table(&devices));
+        // Load and display configured profiles
+        let (_, profiles) = tio_rs::config::load_config();
+        print!("{}", tio_rs::list::render_profiles(&profiles));
     }
 }
 
@@ -114,6 +117,9 @@ fn cmd_interactive(args: &Cli) {
         logger,
         args.timestamp,
         args.timestamp_format.clone(),
+        args.auto_connect
+            .as_ref()
+            .unwrap_or(&tio_rs::cli::AutoConnect::Direct),
     ) {
         eprintln!("Session error: {}", e);
         std::process::exit(1);

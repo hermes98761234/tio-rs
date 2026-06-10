@@ -285,7 +285,7 @@ mod tests {
     fn test_days_to_date_2024_01_01() {
         // Days from 1970-01-01 to 2024-01-01
         let _days = (2024 - 1970) * 365 + ((2024 - 1969) / 4); // approximate
-                                                              // More precise: count leap years
+                                                               // More precise: count leap years
         let mut d = 0u64;
         for y in 1970..2024 {
             d += if is_leap(y) { 366 } else { 365 };

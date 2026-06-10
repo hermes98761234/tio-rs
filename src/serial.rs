@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::thread;
@@ -8,6 +9,8 @@ use serialport::{DataBits, FlowControl, Parity, StopBits};
 use std::os::fd::AsFd;
 
 use nix::sys::termios::tcgetattr;
+
+use crate::cli::AutoConnect;
 
 /// Get the current termios for a file descriptor.
 pub fn get_termios(fd: &dyn AsFd) -> nix::Result<nix::sys::termios::Termios> {
@@ -80,11 +83,29 @@ pub fn open(cfg: &SerialConfig) -> Result<Box<dyn serialport::SerialPort>, seria
     Ok(port)
 }
 
-/// Open with reconnect loop. On read/write error, if reconnect is enabled,
-/// polls for device reappearance every 500ms and reopens.
+/// Open with reconnect loop and auto-connect strategy.
+///
+/// For `AutoConnect::Direct` (the default), behaves like the original
+/// `open_with_reconnect`: tries to open the given device, reconnects on error.
+///
+/// For `AutoConnect::New`, snapshots the current /dev tty devices, then polls
+/// every 200ms for a new device to appear and connects to the first one found.
+///
+/// For `AutoConnect::Latest`, picks the most recently attached existing device
+/// (by mtime of the device node).
 pub fn open_with_reconnect(
     cfg: &SerialConfig,
+    strategy: &AutoConnect,
 ) -> Result<Box<dyn serialport::SerialPort>, serialport::Error> {
+    match strategy {
+        AutoConnect::Direct => open_direct(cfg),
+        AutoConnect::New => open_auto_new(cfg),
+        AutoConnect::Latest => open_auto_latest(cfg),
+    }
+}
+
+/// Direct strategy: open the given device, with reconnect loop.
+fn open_direct(cfg: &SerialConfig) -> Result<Box<dyn serialport::SerialPort>, serialport::Error> {
     loop {
         match open(cfg) {
             Ok(port) => {
@@ -99,6 +120,113 @@ pub fn open_with_reconnect(
                 wait_for_device(&cfg.device);
             }
         }
+    }
+}
+
+/// New strategy: snapshot /dev tty devices, poll every 200ms for a new device.
+fn open_auto_new(cfg: &SerialConfig) -> Result<Box<dyn serialport::SerialPort>, serialport::Error> {
+    let before = snapshot_tty_devices();
+    status_line("Waiting for new device...");
+
+    loop {
+        thread::sleep(Duration::from_millis(200));
+        let after = snapshot_tty_devices();
+        let new_devices: Vec<String> = after.difference(&before).cloned().collect();
+
+        for dev in &new_devices {
+            let test_cfg = SerialConfig {
+                device: dev.clone(),
+                ..cfg.clone()
+            };
+            match open(&test_cfg) {
+                Ok(port) => {
+                    status_line(&format!("Connected to new device {}", dev));
+                    return Ok(port);
+                }
+                Err(_) => {
+                    // Keep polling
+                }
+            }
+        }
+    }
+}
+
+/// Latest strategy: pick the most recently attached device by mtime.
+fn open_auto_latest(
+    cfg: &SerialConfig,
+) -> Result<Box<dyn serialport::SerialPort>, serialport::Error> {
+    loop {
+        let devices = snapshot_tty_devices();
+        if let Some(latest) = pick_latest_device(&devices) {
+            let test_cfg = SerialConfig {
+                device: latest,
+                ..cfg.clone()
+            };
+            match open(&test_cfg) {
+                Ok(port) => {
+                    status_line(&format!("Connected to latest device {}", test_cfg.device));
+                    return Ok(port);
+                }
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
+            }
+        }
+        status_line("Waiting for device...");
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Snapshot all /dev/tty* devices into a HashSet.
+pub fn snapshot_tty_devices() -> HashSet<String> {
+    let mut devices = HashSet::new();
+    if let Ok(entries) = std::fs::read_dir("/dev") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("tty") {
+                devices.insert(format!("/dev/{}", name));
+            }
+        }
+    }
+    devices
+}
+
+/// Pick the most recently attached device from a set, by mtime.
+/// Pure function — easily testable.
+pub fn pick_latest_device(devices: &HashSet<String>) -> Option<String> {
+    let mut best: Option<(String, std::time::SystemTime)> = None;
+
+    for dev in devices {
+        if let Ok(meta) = std::fs::metadata(dev) {
+            if let Ok(mtime) = meta.modified() {
+                if best.as_ref().is_none_or(|(_, t)| mtime > *t) {
+                    best = Some((dev.clone(), mtime));
+                }
+            }
+        }
+    }
+
+    best.map(|(d, _)| d)
+}
+
+/// Auto-connect strategy selection — pure function for testability.
+/// Given a strategy, a "before" snapshot, and an "after" snapshot,
+/// returns the device to connect to, or None.
+pub fn auto_connect_choice(
+    strategy: &AutoConnect,
+    before: &HashSet<String>,
+    after: &HashSet<String>,
+) -> Option<String> {
+    match strategy {
+        AutoConnect::Direct => None,
+        AutoConnect::New => {
+            // Pick the first new device (sorted for determinism in tests)
+            let mut new_devs: Vec<String> = after.difference(before).cloned().collect();
+            new_devs.sort();
+            new_devs.first().cloned()
+        }
+        AutoConnect::Latest => pick_latest_device(after),
     }
 }
 
@@ -216,5 +344,72 @@ pub fn flush_with_reconnect(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_set(items: &[&str]) -> HashSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_auto_connect_direct_returns_none() {
+        let before = make_set(&["/dev/ttyUSB0"]);
+        let after = make_set(&["/dev/ttyUSB0", "/dev/ttyUSB1"]);
+        let result = auto_connect_choice(&AutoConnect::Direct, &before, &after);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_auto_connect_new_detects_new_device() {
+        let before = make_set(&["/dev/ttyUSB0"]);
+        let after = make_set(&["/dev/ttyUSB0", "/dev/ttyUSB1"]);
+        let result = auto_connect_choice(&AutoConnect::New, &before, &after);
+        assert_eq!(result, Some("/dev/ttyUSB1".to_string()));
+    }
+
+    #[test]
+    fn test_auto_connect_new_no_new_devices() {
+        let before = make_set(&["/dev/ttyUSB0"]);
+        let after = make_set(&["/dev/ttyUSB0"]);
+        let result = auto_connect_choice(&AutoConnect::New, &before, &after);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_auto_connect_new_multiple_new_picks_first_sorted() {
+        let before = make_set(&["/dev/ttyUSB0"]);
+        let after = make_set(&["/dev/ttyUSB0", "/dev/ttyACM0", "/dev/ttyUSB1"]);
+        let result = auto_connect_choice(&AutoConnect::New, &before, &after);
+        // Sorted: ttyACM0 < ttyUSB1
+        assert_eq!(result, Some("/dev/ttyACM0".to_string()));
+    }
+
+    #[test]
+    fn test_auto_connect_latest_empty() {
+        let before = make_set(&[]);
+        let after = make_set(&[]);
+        let result = auto_connect_choice(&AutoConnect::Latest, &before, &after);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_pick_latest_device_empty() {
+        let devices: HashSet<String> = HashSet::new();
+        assert!(pick_latest_device(&devices).is_none());
+    }
+
+    #[test]
+    fn test_pick_latest_device_returns_some() {
+        // Real /dev/tty devices exist on Linux; just verify it returns Some for non-empty set
+        let devices = make_set(&["/dev/tty", "/dev/tty0"]);
+        let result = pick_latest_device(&devices);
+        // Should return one of them (the one with the newest mtime)
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert!(devices.contains(&result));
     }
 }
