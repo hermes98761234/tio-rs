@@ -85,8 +85,10 @@ fn cmd_send_expect(args: &Cli) {
 }
 
 fn cmd_mcp(_args: &Cli) {
-    eprintln!("not implemented");
-    std::process::exit(1);
+    if let Err(e) = tio_rs::mcp::run_mcp_server() {
+        eprintln!("MCP server error: {}", e);
+        std::process::exit(1);
+    }
 }
 
 fn cmd_interactive(args: &Cli) {
