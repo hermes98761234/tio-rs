@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            use_cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            use_cross: true
+          # musl targets: serialport depends on libudev which is not available
+          # for static musl builds. Dropping musl targets for now — can be
+          # re-added if serialport supports default-features = false or
+          # vendored libudev.
+          # - os: ubuntu-latest
+          #   target: x86_64-unknown-linux-musl
+          #   use_cross: false
+          # - os: ubuntu-latest
+          #   target: aarch64-unknown-linux-musl
+          #   use_cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            use_cross: false
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            use_cross: false
+    runs-on: ${{ matrix.os }}
+    # Darwin builds may fail if serialport needs system frameworks
+    continue-on-error: ${{ contains(matrix.target, 'apple-darwin') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (native)
+        if: '!matrix.use_cross'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Prepare binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          ext=""
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ext=".exe"
+          fi
+          src="target/${{ matrix.target }}/release/tio${ext}"
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            strip "$src" || true
+          fi
+          cp "$src" "dist/tio-${{ matrix.target }}${ext}"
+          ls -l dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        run: |
+          cd artifacts
+          sha256sum tio-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Determine pre-release status
+        id: prerelease
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          if echo "$TAG" | grep -qE '-(beta|alpha|rc)'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate release notes
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          {
+            if [ -n "$PREV_TAG" ]; then
+              echo "## Changes since $PREV_TAG"
+            else
+              echo "## Changes"
+            fi
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              git log --oneline --no-decorate "${PREV_TAG}..HEAD"
+            else
+              git log --oneline --no-decorate -20
+            fi
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          prerelease: ${{ steps.prerelease.outputs.prerelease }}
+          files: |
+            artifacts/tio-*
+            artifacts/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
